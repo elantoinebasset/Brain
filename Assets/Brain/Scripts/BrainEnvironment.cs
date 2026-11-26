@@ -20,6 +20,7 @@ namespace BrainVR
             public Renderer renderer;
             public Vector3 position;
             public List<int> connections = new List<int>();
+            public bool removed;
         }
 
         [Serializable]
@@ -28,6 +29,8 @@ namespace BrainVR
             public int a;
             public int b;
             public Vector3[] points;
+            public Renderer renderer;
+            public bool removed;
         }
 
         [Header("Données générées (Tools > Cerveau VR)")]
@@ -69,6 +72,8 @@ namespace BrainVR
         public int autoConnectMax = 3;
         [Tooltip("Vitesse de pousse d'une nouvelle connexion (m/s)")]
         public float growSpeed = 0.7f;
+        [Tooltip("Rayon de la zone qu'on peut attraper autour d'un neurone")]
+        public float grabRadius = 0.4f;
 
         class Pulse
         {
@@ -130,6 +135,10 @@ namespace BrainVR
                 lengths.Add(cum[cum.Length - 1]);
             }
 
+            for (int i = 0; i < neurons.Count; i++)
+                if (!neurons[i].removed && neurons[i].renderer != null)
+                    NeuronHandle.Attach(this, neurons[i].renderer.gameObject, i, grabRadius);
+
             mpb = new MaterialPropertyBlock();
             for (int p = 0; p < maxPulses; p++) pool.Add(CreatePulse());
             spontTimer = 0.5f;
@@ -170,6 +179,7 @@ namespace BrainVR
         /// <summary>Fait s'activer un neurone : il flashe et envoie des impulsions à ses voisins.</summary>
         public void Fire(int i)
         {
+            if (neurons[i].removed) return;
             if (Time.time - lastFire[i] < refractoryTime) return;
             lastFire[i] = Time.time;
             flash[i] = 1f;
@@ -184,7 +194,7 @@ namespace BrainVR
 
         bool Launch(int c, int from)
         {
-            if (pool.Count == 0) return false;
+            if (pool.Count == 0 || connections[c].removed) return false;
             var p = pool[pool.Count - 1];
             pool.RemoveAt(pool.Count - 1);
             p.conn = c;
@@ -214,6 +224,14 @@ namespace BrainVR
                 var p = active[k];
                 int c = p.conn;
                 p.dist += pulseSpeed * dt;
+                if (connections[c].removed)
+                {
+                    p.trail.emitting = false;
+                    p.go.SetActive(false);
+                    active.RemoveAt(k);
+                    pool.Add(p);
+                    continue;
+                }
                 if (p.dist >= lengths[c])
                 {
                     p.trail.emitting = false;
@@ -267,10 +285,11 @@ namespace BrainVR
             flash.Add(1f);
             lastFire.Add(Time.time);
             int idx = neurons.Count - 1;
+            NeuronHandle.Attach(this, r.gameObject, idx, grabRadius);
 
             var candidates = new List<int>();
             for (int i = 0; i < idx; i++)
-                if (Vector3.Distance(neurons[i].position, local) <= autoConnectDistance) candidates.Add(i);
+                if (!neurons[i].removed && Vector3.Distance(neurons[i].position, local) <= autoConnectDistance) candidates.Add(i);
             candidates.Sort((x, y) => Vector3.Distance(neurons[x].position, local)
                 .CompareTo(Vector3.Distance(neurons[y].position, local)));
 
@@ -282,6 +301,7 @@ namespace BrainVR
         IEnumerator GrowConnection(int a, int b, float delay)
         {
             yield return new WaitForSeconds(delay);
+            if (neurons[a].removed || neurons[b].removed) yield break;
 
             var pts = NeuronMeshFactory.AxonPath(neurons[a].position, neurons[b].position);
             for (int i = 0; i < pts.Length; i++) pts[i].y = Mathf.Max(pts[i].y, 0.35f);
@@ -311,6 +331,12 @@ namespace BrainVR
             float d = 0f;
             while (d < total)
             {
+                if (neurons[a].removed || neurons[b].removed)
+                {
+                    Destroy(go);
+                    Destroy(tip.gameObject);
+                    yield break;
+                }
                 d = Mathf.Min(total, d + growSpeed * Time.deltaTime);
                 partial.Clear();
                 radii.Clear();
@@ -336,7 +362,12 @@ namespace BrainVR
             go.name = "Connexion (creee)";
             Destroy(tip.gameObject);
 
-            connections.Add(new Connection { a = a, b = b, points = pts });
+            if (neurons[a].removed || neurons[b].removed)
+            {
+                Destroy(go);
+                yield break;
+            }
+            connections.Add(new Connection { a = a, b = b, points = pts, renderer = mr });
             int c = connections.Count - 1;
             cumulative.Add(cum);
             lengths.Add(total);
@@ -346,6 +377,34 @@ namespace BrainVR
             flash[a] = 1f;
             flash[b] = 1f;
             Launch(c, a);
+        }
+
+        /// <summary>Retire un neurone (et ses connexions) puis fait apparaître une orbe à sa place.</summary>
+        public NeuronOrb ConvertNeuronToOrb(int idx, Vector3 worldPos)
+        {
+            RemoveNeuron(idx);
+            var panel = FindFirstObjectByType<NeuronSpawnerPanel>();
+            var mat = panel != null && panel.orbMaterial != null ? panel.orbMaterial : pulseMaterial;
+            float radius = panel != null ? panel.orbRadius : 0.09f;
+            return NeuronOrb.Create(this, panel, worldPos, radius, mat);
+        }
+
+        public void RemoveNeuron(int idx)
+        {
+            if (idx < 0 || idx >= neurons.Count || neurons[idx].removed) return;
+            neurons[idx].removed = true;
+            foreach (int c in neurons[idx].connections.ToArray()) RemoveConnection(c);
+            neurons[idx].connections.Clear();
+        }
+
+        public void RemoveConnection(int c)
+        {
+            var conn = connections[c];
+            if (conn.removed) return;
+            conn.removed = true;
+            neurons[conn.a].connections.Remove(c);
+            neurons[conn.b].connections.Remove(c);
+            if (conn.renderer != null) Destroy(conn.renderer.gameObject);
         }
 
         void SetEmission(int i, Color c)

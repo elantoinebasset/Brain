@@ -7,6 +7,9 @@ using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using UnityEngine.XR.Interaction.Toolkit.UI;
 using TMPro;
+using UnityEditor.Events;
+using UnityEngine.Events;
+using Unity.VRTemplate;
 
 namespace BrainVR.EditorTools
 {
@@ -32,6 +35,9 @@ namespace BrainVR.EditorTools
         float cavityHeight = 10f;
         float playerClearRadius = 2.8f;
         bool hideTemplateEnvironment = true;
+        enum PanelMode { Fixe, Poignet, InfobulleMainGauche }
+        static PanelMode panelMode = PanelMode.InfobulleMainGauche;
+        const string CalloutName = "Callout - Creer un neurone";
 
         struct Mats
         {
@@ -62,7 +68,9 @@ namespace BrainVR.EditorTools
                 Generate();
             }
             EditorGUILayout.Space();
+            panelMode = (PanelMode)EditorGUILayout.EnumPopup("Affichage du panneau", panelMode);
             if (GUILayout.Button("Ajouter / recréer le panneau « Créer un neurone »", GUILayout.Height(26))) CreateSpawnerPanel();
+            if (GUILayout.Button("Ajouter / recréer le panneau de textes", GUILayout.Height(26))) CreateTextPanel();
             EditorGUILayout.Space();
             if (GUILayout.Button("Réafficher le décor du template")) SetTemplateEnvironmentVisible(true);
             if (GUILayout.Button("Supprimer le cerveau"))
@@ -115,20 +123,22 @@ namespace BrainVR.EditorTools
                 env.neurons.Add(new BrainEnvironment.Neuron { renderer = mr, position = positions[i] });
             }
 
-            // --- Axones (connexions) ---
-            var axons = new BrainMeshBuilder(2);
+            // --- Axones (connexions) : un objet par connexion pour pouvoir les retirer en jeu ---
+            var axonsRoot = new GameObject("Axones");
+            axonsRoot.transform.SetParent(root.transform, false);
             foreach (var pair in BuildPairs(positions))
             {
                 var pts = AxonPath(positions[pair.x], positions[pair.y]);
                 int idx = env.connections.Count;
-                env.connections.Add(new BrainEnvironment.Connection { a = pair.x, b = pair.y, points = pts });
+                var ab = new BrainMeshBuilder(2);
+                NeuronMeshFactory.BuildAxon(ab, pts, somaRadii[pair.y]);
+                var am = ab.ToMesh("Axone_" + idx);
+                meshes.Add(am);
+                var amr = CreateRenderer("Axone " + idx, axonsRoot.transform, Vector3.zero, Quaternion.identity, am, new[] { mats.axon, mats.myelin });
+                env.connections.Add(new BrainEnvironment.Connection { a = pair.x, b = pair.y, points = pts, renderer = amr });
                 env.neurons[pair.x].connections.Add(idx);
                 env.neurons[pair.y].connections.Add(idx);
-                NeuronMeshFactory.BuildAxon(axons, pts, somaRadii[pair.y]);
             }
-            var axonMesh = axons.ToMesh("Axones");
-            meshes.Add(axonMesh);
-            CreateRenderer("Axones", root.transform, Vector3.zero, Quaternion.identity, axonMesh, new[] { mats.axon, mats.myelin });
 
             // --- Impulsions ---
             var pb = new BrainMeshBuilder(1);
@@ -306,8 +316,8 @@ namespace BrainVR.EditorTools
             Undo.RegisterCreatedObjectUndo(go, "Panneau neurone");
             var rt = (RectTransform)go.transform;
             rt.SetPositionAndRotation(pos, rot);
-            rt.sizeDelta = new Vector2(420f, 270f);
-            rt.localScale = Vector3.one * 0.0015f;
+            rt.sizeDelta = new Vector2(600f, 600f);
+            rt.localScale = Vector3.one * 0.001f; // 60 cm x 60 cm
 
             var canvas = go.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
@@ -315,27 +325,50 @@ namespace BrainVR.EditorTools
             scaler.dynamicPixelsPerUnit = 3f;
             go.AddComponent<TrackedDeviceGraphicRaycaster>();
 
-            var bg = AddUI<Image>("Fond", go.transform, Vector2.zero, new Vector2(420f, 270f));
-            bg.color = new Color(0.10f, 0.03f, 0.12f, 0.88f);
+            var cyan = new Color(0f, 0.83f, 1f);
 
-            var title = AddText("Titre", go.transform, new Vector2(0f, 95f), new Vector2(400f, 50f), "Laboratoire neuronal", 34);
+            // Fond sombre translucide
+            var bg = AddUI<Image>("Fond", go.transform, Vector2.zero, new Vector2(600f, 600f));
+            bg.color = new Color(0f, 0f, 0f, 0.38f);
+
+            // Bordure cyan + halo lumineux
+            AddFrame(go.transform, "Halo", 600f, 30f, new Color(cyan.r, cyan.g, cyan.b, 0.28f));
+            AddFrame(go.transform, "Halo fin", 600f, 20f, new Color(cyan.r, cyan.g, cyan.b, 0.45f));
+            AddFrame(go.transform, "Bordure", 600f, 11f, cyan);
+
+            // Icône main
+            var icon = AddUI<Image>("Icone main", go.transform, new Vector2(-195f, 197f), new Vector2(90f, 140f));
+            icon.sprite = LoadSprite("Assets/Brain/Sprites/IconeMain.png");
+            icon.preserveAspect = true;
+            icon.raycastTarget = false;
+
+            // Titre
+            var title = AddText("Titre", go.transform, new Vector2(60f, 180f), new Vector2(400f, 150f), "Créez un\nneurone", 62);
             title.fontStyle = FontStyles.Bold;
-            title.color = new Color(1f, 0.75f, 0.95f);
-            AddText("Aide", go.transform, new Vector2(0f, 45f), new Vector2(390f, 60f),
-                "Crée une orbe, attrape-la et relâche-la où tu veux : elle deviendra un neurone.", 19);
+            title.lineSpacing = -8f;
 
-            var btnImg = AddUI<Image>("Bouton creer", go.transform, new Vector2(0f, -30f), new Vector2(300f, 70f));
-            btnImg.color = new Color(0.55f, 0.25f, 0.9f);
+            // Consignes
+            var body = AddText("Consignes", go.transform, new Vector2(0f, -20f), new Vector2(570f, 170f),
+                "Cliquez sur <b>Créer</b>\nGraber le neurone\nPlacez la où vous voulez", 40);
+            body.lineSpacing = -6f;
+
+            // Bouton
+            var btnImg = AddUI<Image>("Bouton creer", go.transform, new Vector2(0f, -191f), new Vector2(372f, 108f));
+            btnImg.sprite = LoadSprite("Assets/VRTemplateAssets/Sprites/UI/Round Radius 10.png");
+            btnImg.type = Image.Type.Sliced;
+            btnImg.pixelsPerUnitMultiplier = 6f;
+            btnImg.color = Color.white;
             var btn = btnImg.gameObject.AddComponent<Button>();
             btn.targetGraphic = btnImg;
             var colors = btn.colors;
-            colors.highlightedColor = new Color(0.85f, 0.75f, 1f);
-            colors.pressedColor = new Color(0.6f, 0.6f, 0.7f);
+            colors.normalColor = cyan;
+            colors.highlightedColor = new Color(0.55f, 0.92f, 1f);
+            colors.pressedColor = new Color(0f, 0.55f, 0.75f);
+            colors.selectedColor = cyan;
             btn.colors = colors;
-            AddText("Texte", btnImg.transform, Vector2.zero, new Vector2(300f, 70f), "Créer un neurone", 28).fontStyle = FontStyles.Bold;
+            AddText("Texte", btnImg.transform, Vector2.zero, new Vector2(372f, 108f), "Créer", 52).fontStyle = FontStyles.Bold;
 
-            var counter = AddText("Compteur", go.transform, new Vector2(0f, -102f), new Vector2(400f, 34f), "Neurones créés : 0", 18);
-            counter.color = new Color(0.75f, 0.9f, 1f);
+            TMP_Text counter = null;
 
             var spawner = go.AddComponent<NeuronSpawnerPanel>();
             spawner.env = env;
@@ -343,8 +376,136 @@ namespace BrainVR.EditorTools
             spawner.counterText = counter;
             spawner.orbMaterial = orbMat;
 
+            if (panelMode == PanelMode.InfobulleMainGauche)
+            {
+                if (!SetupAsLeftCallout(go, spawner))
+                    EditorUtility.DisplayDialog("Cerveau VR", "« Affordance Callouts Left » introuvable dans la scène : le panneau reste fixe.", "OK");
+            }
+            else if (panelMode == PanelMode.Poignet)
+            {
+                var wm = go.AddComponent<WristMenu>();
+                wm.hand = UnityEngine.XR.Hands.Handedness.Left;
+                foreach (var t in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    if (t.name == "Left Controller" && t.gameObject.scene == go.scene) { wm.controllerFallback = t; break; }
+                // L'orbe apparaît juste au-dessus du panneau, un peu vers le joueur
+                spawner.spawnOffset = new Vector3(0f, 0.16f, -0.06f);
+            }
+
             EditorSceneManager.MarkSceneDirty(go.scene);
             Selection.activeGameObject = go;
+        }
+
+        static void AddFrame(Transform parent, string name, float size, float thickness, Color c)
+            => AddFrame(parent, name, size, size, thickness, c);
+
+        static void AddFrame(Transform parent, string name, float w, float h2, float thickness, Color c)
+        {
+            var root = new GameObject(name, typeof(RectTransform));
+            var rt = (RectTransform)root.transform;
+            rt.SetParent(parent, false);
+            rt.sizeDelta = new Vector2(w, h2);
+            float hw = w / 2f, hh = h2 / 2f, t = thickness / 2f;
+            AddUI<Image>("Haut", root.transform, new Vector2(0f, hh - t), new Vector2(w, thickness)).color = c;
+            AddUI<Image>("Bas", root.transform, new Vector2(0f, -hh + t), new Vector2(w, thickness)).color = c;
+            AddUI<Image>("Gauche", root.transform, new Vector2(-hw + t, 0f), new Vector2(thickness, h2 - 2f * thickness)).color = c;
+            AddUI<Image>("Droite", root.transform, new Vector2(hw - t, 0f), new Vector2(thickness, h2 - 2f * thickness)).color = c;
+            foreach (var img in root.GetComponentsInChildren<Image>()) img.raycastTarget = false;
+        }
+
+        static Sprite LoadSprite(string path)
+        {
+            var imp = AssetImporter.GetAtPath(path) as TextureImporter;
+            if (imp != null && imp.textureType != TextureImporterType.Sprite)
+            {
+                imp.textureType = TextureImporterType.Sprite;
+                imp.spriteImportMode = SpriteImportMode.Single;
+                imp.alphaIsTransparency = true;
+                imp.mipmapEnabled = false;
+                imp.SaveAndReimport();
+            }
+            return AssetDatabase.LoadAssetAtPath<Sprite>(path);
+        }
+
+        /// <summary>Branche le panneau sur les infobulles de la manette gauche (Affordance Callouts Left).</summary>
+        static bool SetupAsLeftCallout(GameObject panel, NeuronSpawnerPanel spawner)
+        {
+            if (!SetupAsLeftCallout(panel, CalloutName, 0.00035f, 0.15f, 0.02f)) return false;
+            spawner.spawnOffset = new Vector3(0f, 0.16f, -0.06f);
+            return true;
+        }
+
+        static bool SetupAsLeftCallout(GameObject panel, string calloutName, float scale, float height, float side)
+        {
+            Transform callouts = null;
+            foreach (var t in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                if (t.name == "Affordance Callouts Left" && t.gameObject.scene == panel.scene) { callouts = t; break; }
+            if (callouts == null) return false;
+            var gaze = callouts.GetComponent<CalloutGazeController>();
+            if (gaze == null) return false;
+
+            var oldCallout = callouts.Find(calloutName);
+            if (oldCallout) Undo.DestroyObjectImmediate(oldCallout.gameObject);
+
+            var calloutGo = new GameObject(calloutName);
+            Undo.RegisterCreatedObjectUndo(calloutGo, "Callout");
+            calloutGo.transform.SetParent(callouts, false);
+            var callout = calloutGo.AddComponent<Callout>();
+            var so = new SerializedObject(callout);
+            so.FindProperty("m_LazyTooltip").objectReferenceValue = panel.transform;
+            so.FindProperty("m_Curve").objectReferenceValue = null;
+            so.FindProperty("m_DwellTime").floatValue = 0.5f;
+            so.FindProperty("m_Unparent").boolValue = true;
+            so.FindProperty("m_TurnOffAtStart").boolValue = true;
+            so.ApplyModifiedPropertiesWithoutUndo();
+
+            Undo.RecordObject(gaze, "Callout");
+            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            var entered = (UnityEvent)typeof(CalloutGazeController).GetField("m_FacingEntered", flags).GetValue(gaze);
+            var exited = (UnityEvent)typeof(CalloutGazeController).GetField("m_FacingExited", flags).GetValue(gaze);
+            CleanMissing(entered, calloutName);
+            CleanMissing(exited, calloutName);
+            UnityEventTools.AddVoidPersistentListener(entered, callout.GazeHoverStart);
+            UnityEventTools.AddVoidPersistentListener(exited, callout.GazeHoverEnd);
+            EditorUtility.SetDirty(gaze);
+            PrefabUtility.RecordPrefabInstancePropertyModifications(gaze);
+
+            panel.transform.localScale = Vector3.one * scale;
+            var follow = panel.AddComponent<CalloutPanelFollow>();
+            follow.target = calloutGo.transform;
+            follow.height = height;
+            follow.side = side;
+            panel.transform.position = callouts.position + Vector3.up * height;
+            return true;
+        }
+
+        static void RemoveLeftCallout(string calloutName)
+        {
+            var all = Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            var targets = new List<Transform>();
+            foreach (var t in all) if (t && t.name == "Affordance Callouts Left") targets.Add(t);
+            foreach (var t in targets)
+            {
+                var old = t.Find(calloutName);
+                if (old) Undo.DestroyObjectImmediate(old.gameObject);
+                var gaze = t.GetComponent<CalloutGazeController>();
+                if (gaze == null) continue;
+                Undo.RecordObject(gaze, "Callout");
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                CleanMissing((UnityEvent)typeof(CalloutGazeController).GetField("m_FacingEntered", flags).GetValue(gaze), calloutName);
+                CleanMissing((UnityEvent)typeof(CalloutGazeController).GetField("m_FacingExited", flags).GetValue(gaze), calloutName);
+                EditorUtility.SetDirty(gaze);
+                PrefabUtility.RecordPrefabInstancePropertyModifications(gaze);
+            }
+        }
+
+        static void CleanMissing(UnityEvent evt, string calloutName)
+        {
+            for (int i = evt.GetPersistentEventCount() - 1; i >= 0; i--)
+            {
+                var target = evt.GetPersistentTarget(i);
+                if (target == null || (target is Component c && c.gameObject.name == calloutName))
+                    UnityEventTools.RemovePersistentListener(evt, i);
+            }
         }
 
         static T AddUI<T>(string name, Transform parent, Vector2 anchoredPos, Vector2 size) where T : Component
@@ -368,6 +529,95 @@ namespace BrainVR.EditorTools
             t.raycastTarget = false;
             return t;
         }
+
+        // =====================================================================
+        // Panneau de textes (infobulle main gauche)
+        const string TextPanelName = "Panneau - Textes";
+        const string TextSequenceName = "Sequence de textes";
+        const string TextCalloutName = "Callout - Textes";
+
+        static void CreateTextPanel()
+        {
+            // On garde les textes déjà écrits si le panneau existe déjà
+            string savedSequence = null;
+            var oldSeqGo = GameObject.Find(TextSequenceName);
+            if (oldSeqGo && oldSeqGo.GetComponent<TextSequence>())
+                savedSequence = EditorJsonUtility.ToJson(oldSeqGo.GetComponent<TextSequence>());
+            if (oldSeqGo) Undo.DestroyObjectImmediate(oldSeqGo);
+            var oldPanel = GameObject.Find(TextPanelName);
+            if (oldPanel) Undo.DestroyObjectImmediate(oldPanel);
+
+            const float W = 1000f, H = 600f;
+            var cyan = new Color(0f, 0.83f, 1f);
+
+            var go = new GameObject(TextPanelName, typeof(RectTransform));
+            Undo.RegisterCreatedObjectUndo(go, "Panneau textes");
+            var rt = (RectTransform)go.transform;
+            rt.sizeDelta = new Vector2(W, H);
+            rt.localScale = Vector3.one * 0.00045f; // 45 cm x 27 cm, à 1,3 m des yeux
+            rt.position = new Vector3(0f, 1.9f, 1.2f);
+
+            var canvas = go.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            go.AddComponent<CanvasScaler>().dynamicPixelsPerUnit = 3f;
+
+            AddUI<Image>("Fond", go.transform, Vector2.zero, new Vector2(W, H)).color = new Color(0f, 0f, 0f, 0.38f);
+            AddFrame(go.transform, "Halo", W, H, 30f, new Color(cyan.r, cyan.g, cyan.b, 0.28f));
+            AddFrame(go.transform, "Halo fin", W, H, 20f, new Color(cyan.r, cyan.g, cyan.b, 0.45f));
+            AddFrame(go.transform, "Bordure", W, H, 11f, cyan);
+
+            var text = AddText("Texte", go.transform, new Vector2(10f, 5f), new Vector2(860f, 490f), "", 40);
+            text.alignment = TextAlignmentOptions.TopLeft;
+            text.lineSpacing = -2f;
+            text.richText = true;
+
+            // Rond « A »
+            var ring = AddUI<Image>("Bouton A", go.transform, new Vector2(428f, -222f), new Vector2(82f, 82f));
+            ring.sprite = LoadSprite("Assets/VRTemplateAssets/Sprites/UI/Circle_60x60 Outline 4.png");
+            ring.color = cyan;
+            ring.raycastTarget = false;
+            AddText("A", ring.transform, new Vector2(0f, 2f), new Vector2(82f, 82f), "A", 48);
+
+            var seqGo = new GameObject(TextSequenceName);
+            Undo.RegisterCreatedObjectUndo(seqGo, "Sequence de textes");
+            var seq = seqGo.AddComponent<TextSequence>();
+            if (savedSequence != null) EditorJsonUtility.FromJsonOverwrite(savedSequence, seq);
+            else seq.groups = DefaultGroups();
+            seq.panel = go;
+            seq.textField = text;
+
+            // Panneau en haut du champ de vision (plus d'infobulle sur la manette)
+            go.AddComponent<HeadUpPanel>();
+            RemoveLeftCallout(TextCalloutName);
+
+            EditorSceneManager.MarkSceneDirty(go.scene);
+            Selection.activeGameObject = seqGo;
+        }
+
+        static List<TextGroup> DefaultGroups() => new List<TextGroup>
+        {
+            new TextGroup
+            {
+                title = "Bienvenue dans le cerveau !",
+                text = "Le cerveau est un organe essentiel du système nerveux central, situé dans la boîte crânienne.\n\n" +
+                       "Il est composé de milliards de neurones qui communiquent entre eux grâce à des signaux électriques et chimiques.",
+                wordInterval = 0.12f, delayAfter = 5f
+            },
+            new TextGroup
+            {
+                text = "Divisé en plusieurs parties, dont les principales sont le cerveau, le cervelet et le tronc cérébral, " +
+                       "il assure le contrôle des mouvements volontaires, la mémoire, le langage, les émotions, les sensations " +
+                       "et les fonctions vitales comme la respiration et le rythme cardiaque.",
+                wordInterval = 0.12f, delayAfter = 5f
+            },
+            new TextGroup
+            {
+                text = "Vous allez désormais consommer une certaine quantité de cannabis . Celui-ci contient une molécule " +
+                       "psychoactive appelée **THC**, ou **tétrahydrocannabinol**. Vous allez absorber **49 mg** de cette " +
+                       "substance l’équivalent d’environ un joint. Puis vous passerez à **490 mg**, l’équivalent de 10 joints.",
+                wordInterval = 0.12f, delayAfter = 6f
+            },
+        };
 
         static void CreateDust(Transform root, Material mat)
         {

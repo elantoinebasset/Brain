@@ -79,6 +79,7 @@ namespace BrainVR
             StartCoroutine(WaitThenTransform());
         }
 
+        [ContextMenu("Test : relâcher (transformer en neurone)")]
         public void ForceTransform()
         {
             if (!transforming) StartCoroutine(TransformIntoNeuron());

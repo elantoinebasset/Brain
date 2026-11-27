@@ -235,6 +235,12 @@ namespace BrainVR
                 case ThcAction.Eclairs:
                     maxPerturbation = true;
                     if (storm != null) storm.StartStorm();
+                    // Les hallucinations disparaissent quand les éclairs arrivent
+                    if (hallucinations != null)
+                    {
+                        hallucinations.Stop();
+                        hallucinations.gameObject.SetActive(false);
+                    }
                     break;
                 case ThcAction.Obscurite:
                     if (breathing != null) breathing.enabled = false; // remet les lumières à leur base avant de les éteindre

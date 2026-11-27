@@ -105,6 +105,7 @@ namespace BrainVR
             if (env == null) env = FindFirstObjectByType<BrainEnvironment>();
             if (env == null) return;
             running = true;
+            HideHallucinations();
             for (int i = 0; i < env.neurons.Count; i++)
                 if (env.IsAlive(i) && env.IsBlocked(i)) struck.Add(i);
             if (struck.Count == 0)
@@ -217,6 +218,17 @@ namespace BrainVR
                 int i = tmp[Random.Range(0, tmp.Count)];
                 Vector3 c = env.NeuronWorldPosition(i);
                 Fire(c + Random.insideUnitSphere * 0.15f, c + Random.onUnitSphere * Random.Range(0.4f, 0.9f), 0.12f, 0.5f);
+            }
+        }
+
+        /// <summary>Les hallucinations disparaissent quand les éclairs arrivent.</summary>
+        static void HideHallucinations()
+        {
+            foreach (var h in FindObjectsByType<HallucinationSpawner>(FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+            {
+                h.Stop();
+                h.gameObject.SetActive(false);
+                Debug.Log("[Cerveau VR] Éclairs : « " + h.name + " » masqué.");
             }
         }
 

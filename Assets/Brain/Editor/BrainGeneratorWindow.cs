@@ -3,6 +3,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using UnityEngine.XR.Interaction.Toolkit.UI;
@@ -71,8 +72,16 @@ namespace BrainVR.EditorTools
             panelMode = (PanelMode)EditorGUILayout.EnumPopup("Affichage du panneau", panelMode);
             if (GUILayout.Button("Ajouter / recréer le panneau « Créer un neurone »", GUILayout.Height(26))) CreateSpawnerPanel();
             if (GUILayout.Button("Ajouter / recréer le panneau de textes", GUILayout.Height(26))) CreateTextPanel();
+            if (GUILayout.Button("Ajouter / recréer le panneau « Réinitialiser »", GUILayout.Height(26))) CreateResetPanel();
+            if (GUILayout.Button("Ajouter / recréer le bloc « Consommation » + jauges", GUILayout.Height(26))) CreateCannabisSetup();
+            if (GUILayout.Button("Ajouter / recréer le scénario THC (molécules + texte + alerte)", GUILayout.Height(26))) CreateThcScenario();
+            if (GUILayout.Button("Ajouter les hallucinations (modèles 3D à remplir)", GUILayout.Height(26))) CreateHallucinations();
+            if (GUILayout.Button("Ajouter les poignées à tous les panneaux", GUILayout.Height(26))) AddGrabHandlesToAllPanels();
+            if (GUILayout.Button("Activer la rotation fluide de la caméra", GUILayout.Height(26))) AddSmoothTurn();
+            if (GUILayout.Button("Ajouter / mettre à jour l'ambiance cinématique", GUILayout.Height(26))) CreateCinematic();
             EditorGUILayout.Space();
             if (GUILayout.Button("Réafficher le décor du template")) SetTemplateEnvironmentVisible(true);
+            if (GUILayout.Button("Masquer le décor du template (et ses murs invisibles)")) SetTemplateEnvironmentVisible(false);
             if (GUILayout.Button("Supprimer le cerveau"))
             {
                 var old = GameObject.Find(RootName);
@@ -274,6 +283,639 @@ namespace BrainVR.EditorTools
         // =====================================================================
         // Ambiance
         // =====================================================================
+        // Consommation : état THC + bloc cliquable + jauges (dose / timeline) en haut à gauche
+        const string StateName = "Etat THC";
+        const string BlockRootName = "Consommation";
+        const string HudName = "HUD - Consommation";
+
+        static GameObject FindRoot(string name)
+        {
+            foreach (var t in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                if (t.parent == null && t.name == name) return t.gameObject;
+            return null;
+        }
+
+        static void CreateCannabisSetup()
+        {
+            // --- État ---
+            var state = Object.FindFirstObjectByType<CannabisState>(FindObjectsInactive.Include);
+            if (state == null)
+            {
+                var sgo = new GameObject(StateName);
+                Undo.RegisterCreatedObjectUndo(sgo, "Etat THC");
+                state = sgo.AddComponent<CannabisState>();
+            }
+
+            // --- Bloc ---
+            Vector3 blockPos = new Vector3(0.45f, 1.05f, 0.65f);
+            var oldBlock = FindRoot(BlockRootName);
+            if (oldBlock) { blockPos = oldBlock.transform.position; Undo.DestroyObjectImmediate(oldBlock); }
+
+            var root = new GameObject(BlockRootName);
+            Undo.RegisterCreatedObjectUndo(root, "Bloc consommation");
+            root.transform.position = blockPos;
+
+            var mat = LitMat("Bloc_conso", Shader.Find("Universal Render Pipeline/Lit"),
+                             new Color(0.35f, 0.85f, 0.35f), 0.55f, new Color(0.05f, 0.3f, 0.05f));
+            AssetDatabase.SaveAssets();
+
+            var block = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            block.name = "Bloc";
+            block.transform.SetParent(root.transform, false);
+            block.transform.localScale = Vector3.one * 0.14f;
+            block.GetComponent<Renderer>().sharedMaterial = mat;
+            block.AddComponent<UnityEngine.XR.Interaction.Toolkit.Interactables.XRSimpleInteractable>();
+            var cb = block.AddComponent<ConsumeBlock>();
+            cb.state = state;
+
+            var labelGo = new GameObject("Etiquette");
+            labelGo.transform.SetParent(root.transform, false);
+            labelGo.transform.localPosition = new Vector3(0f, 0.17f, 0f);
+            var viewer = new Vector3(0f, blockPos.y, 0f);
+            labelGo.transform.rotation = Quaternion.LookRotation(labelGo.transform.position - viewer);
+            var label = labelGo.AddComponent<TextMeshPro>();
+            label.text = "Consommer";
+            label.fontSize = 0.6f;
+            label.alignment = TextAlignmentOptions.Center;
+            label.rectTransform.sizeDelta = new Vector2(0.6f, 0.2f);
+            label.fontStyle = FontStyles.Bold;
+            cb.label = label;
+
+            // --- HUD ---
+            var oldHud = FindRoot(HudName);
+            if (oldHud) Undo.DestroyObjectImmediate(oldHud);
+
+            const float W = 560f, H = 150f;
+            var cyan = new Color(0f, 0.83f, 1f);
+            var hud = new GameObject(HudName, typeof(RectTransform));
+            Undo.RegisterCreatedObjectUndo(hud, "HUD consommation");
+            var rt = (RectTransform)hud.transform;
+            rt.sizeDelta = new Vector2(W, H);
+            rt.localScale = Vector3.one * 0.0005f; // 28 cm x 7,5 cm
+            rt.position = new Vector3(-0.5f, 1.8f, 1.1f);
+            var canvas = hud.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            hud.AddComponent<CanvasScaler>().dynamicPixelsPerUnit = 3f;
+
+            AddUI<Image>("Fond", hud.transform, Vector2.zero, new Vector2(W, H)).color = new Color(0f, 0f, 0f, 0.45f);
+            AddFrame(hud.transform, "Bordure", W, H, 6f, new Color(cyan.r, cyan.g, cyan.b, 0.8f));
+
+            var doseLabel = AddText("Dose titre", hud.transform, new Vector2(-100f, 30f), new Vector2(320f, 44f), "Consommation", 32);
+            doseLabel.alignment = TextAlignmentOptions.Left;
+            doseLabel.textWrappingMode = TextWrappingModes.NoWrap;
+            doseLabel.fontStyle = FontStyles.Bold;
+            var doseValue = AddText("Dose valeur", hud.transform, new Vector2(150f, 30f), new Vector2(200f, 44f), "0 / 490 mg", 30);
+            doseValue.alignment = TextAlignmentOptions.Right;
+            doseValue.textWrappingMode = TextWrappingModes.NoWrap;
+            var doseBar = Bar(hud.transform, "Dose barre", new Vector2(0f, -25f), new Color(0.45f, 0.9f, 0.45f), out var doseFillImg);
+            for (int i = 1; i < 10; i++)
+            {
+                var tick = AddUI<Image>("Graduation " + i, doseBar, Vector2.zero, new Vector2(2f, 0f));
+                var trt = tick.rectTransform;
+                trt.anchorMin = new Vector2(i / 10f, 0f);
+                trt.anchorMax = new Vector2(i / 10f, 1f);
+                trt.sizeDelta = new Vector2(2f, 0f);
+                tick.color = new Color(0f, 0f, 0f, 0.5f);
+                tick.raycastTarget = false;
+            }
+
+            var hudComp = hud.AddComponent<CannabisHud>();
+            hudComp.state = state;
+            hudComp.doseFill = doseFillImg.rectTransform;
+            hudComp.doseFillImage = doseFillImg;
+            hudComp.doseValue = doseValue;
+
+            var head = hud.AddComponent<HeadUpPanel>();
+            head.distance = 1.2f;
+            head.angleAboveCenter = 12f;
+            head.angleLeftOfCenter = 30f;
+
+            AddGrabHandle(hud);
+            EditorSceneManager.MarkSceneDirty(hud.scene);
+            Selection.activeGameObject = root;
+        }
+
+        static RectTransform Bar(Transform parent, string name, Vector2 pos, Color fillColor, out Image fill)
+        {
+            var bg = AddUI<Image>(name, parent, pos, new Vector2(500f, 26f));
+            bg.color = new Color(1f, 1f, 1f, 0.12f);
+            bg.raycastTarget = false;
+            fill = AddUI<Image>("Remplissage", bg.transform, Vector2.zero, Vector2.zero);
+            var frt = fill.rectTransform;
+            frt.anchorMin = Vector2.zero;
+            frt.anchorMax = new Vector2(0f, 1f);
+            frt.pivot = new Vector2(0f, 0.5f);
+            frt.offsetMin = Vector2.zero;
+            frt.offsetMax = Vector2.zero;
+            fill.color = fillColor;
+            fill.raycastTarget = false;
+            return bg.rectTransform;
+        }
+
+        // Scénario THC : molécules qui se fixent sur les neurones + séquence de texte à la 1re prise
+        const string ScenarioName = "Scenario THC";
+
+        static void CreateThcScenario()
+        {
+            var env = Object.FindFirstObjectByType<BrainEnvironment>();
+            if (env == null)
+            {
+                EditorUtility.DisplayDialog("Cerveau VR", "Génère d'abord le cerveau.", "OK");
+                return;
+            }
+            if (Object.FindFirstObjectByType<CannabisState>(FindObjectsInactive.Include) == null)
+                CreateCannabisSetup();
+
+            string saved = null;
+            var old = FindRoot(ScenarioName);
+            if (old && old.GetComponent<ThcScenario>()) saved = EditorJsonUtility.ToJson(old.GetComponent<ThcScenario>());
+            if (old) Undo.DestroyObjectImmediate(old);
+
+            var mat = GetOrCreate("Molecule_THC", Shader.Find("Universal Render Pipeline/Unlit"));
+            mat.SetColor("_BaseColor", new Color(1.3f, 0.35f, 2.4f));
+            EditorUtility.SetDirty(mat);
+            AssetDatabase.SaveAssets();
+
+            var go = new GameObject(ScenarioName);
+            Undo.RegisterCreatedObjectUndo(go, "Scénario THC");
+            var sc = go.AddComponent<ThcScenario>();
+            if (saved != null) EditorJsonUtility.FromJsonOverwrite(saved, sc);
+            sc.env = env;
+            sc.state = Object.FindFirstObjectByType<CannabisState>(FindObjectsInactive.Include);
+            sc.sequence = Object.FindFirstObjectByType<TextSequence>(FindObjectsInactive.Include);
+            sc.moleculeMaterial = mat;
+            sc.trailMaterial = env.trailMaterial;
+
+            // Neurones bloqués : éteints (gris, sans lumière) + halo violet pulsant
+            var particle = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+            var halo = Additive("Halo_THC", particle, SoftDotTexture(), new Color(0.8f, 0.25f, 1f, 0.9f));
+            if (halo.HasProperty("_Cull")) halo.SetFloat("_Cull", 0f);
+            EditorUtility.SetDirty(halo);
+            Undo.RecordObject(env, "Scénario THC");
+            env.blockedHaloMaterial = halo;
+            env.blockedEmission = new Color(0.01f, 0.01f, 0.015f);
+            env.blockedBaseColor = new Color(0.22f, 0.22f, 0.27f);
+            env.blockedHaloColor = new Color(0.8f, 0.25f, 1f, 0.9f);
+            EditorUtility.SetDirty(env);
+            AssetDatabase.SaveAssets();
+
+            sc.alert = CreateAlert(env, sc);
+
+            // Éclairs (séquence 490 mg)
+            var storm = go.AddComponent<LightningStorm>();
+            storm.env = env;
+            storm.boltMaterial = env.trailMaterial;
+            // Style de l'asset « Zap VFX - URP » s'il est dans le projet
+            const string zapDir = "Assets/Vefects/Zap VFX URP";
+            storm.assetBoltMaterial = AssetDatabase.LoadAssetAtPath<Material>(zapDir + "/VFX/Zap/Materials/M_VFX_Zap_Lightning_05_LUT_Add.mat");
+            storm.impactPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(zapDir + "/VFX/Zap/Particles/VFX_Zap_05_Purple.prefab");
+            // Couleurs alternées : violet, rouge, bleu, jaune-orangé (même ordre pour éclairs et impacts)
+            var colorIds = new[] { ("05", "05_Purple"), ("01", "01_Red"), ("02", "02_Blue"), ("03", "03_Yellow") };
+            var boltMats = new List<Material>();
+            var impacts = new List<GameObject>();
+            foreach (var (zapMatId, zapFxId) in colorIds)
+            {
+                var zapMat = AssetDatabase.LoadAssetAtPath<Material>(zapDir + "/VFX/Zap/Materials/M_VFX_Zap_Lightning_" + zapMatId + "_LUT_Add.mat");
+                var zapFx = AssetDatabase.LoadAssetAtPath<GameObject>(zapDir + "/VFX/Zap/Particles/VFX_Zap_" + zapFxId + ".prefab");
+                if (zapMat == null || zapFx == null) continue;
+                boltMats.Add(zapMat);
+                impacts.Add(zapFx);
+            }
+            storm.assetBoltMaterials = boltMats.ToArray();
+            storm.impactPrefabs = impacts.ToArray();
+            var zaps = new List<AudioClip>();
+            foreach (var n in new[] { "SFX_Vefects_Zap_Small_01", "SFX_Vefects_Zap_Medium_01", "SFX_Vefects_Zap_Medium_02" })
+            {
+                var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(zapDir + "/Audio/WAV/" + n + ".wav");
+                if (clip != null) zaps.Add(clip);
+            }
+            storm.zapSounds = zaps.ToArray();
+            if (storm.assetBoltMaterial != null) storm.boltColor = new Color(1f, 1f, 1f, 1f);
+            sc.storm = storm;
+
+            // Lumière au-dessus du joueur (éteinte jusqu'à la fin de la simulation)
+            var oldLight = FindRoot(PlayerLightName);
+            if (oldLight) Undo.DestroyObjectImmediate(oldLight);
+            var lgo = new GameObject(PlayerLightName);
+            Undo.RegisterCreatedObjectUndo(lgo, "Lumière joueur");
+            lgo.transform.position = new Vector3(0f, 2.4f, 0f);
+            var l = lgo.AddComponent<Light>();
+            l.type = LightType.Point;
+            l.range = 4f;
+            l.intensity = 2.5f;
+            l.color = new Color(1f, 0.95f, 0.9f);
+            l.shadows = LightShadows.None;
+            sc.playerLight = lgo.AddComponent<PlayerHaloLight>();
+            sc.hallucinations = Object.FindFirstObjectByType<HallucinationSpawner>(FindObjectsInactive.Include);
+
+            EditorSceneManager.MarkSceneDirty(go.scene);
+            Selection.activeGameObject = go;
+        }
+
+        // Hallucinations : objet créé une seule fois (pour ne pas perdre les modèles déjà glissés dedans)
+        const string HallucinationsName = "Hallucinations";
+
+        static void CreateHallucinations()
+        {
+            var existing = Object.FindFirstObjectByType<HallucinationSpawner>(FindObjectsInactive.Include);
+            if (existing == null)
+            {
+                var go = new GameObject(HallucinationsName);
+                Undo.RegisterCreatedObjectUndo(go, "Hallucinations");
+                existing = go.AddComponent<HallucinationSpawner>();
+            }
+            existing.state = Object.FindFirstObjectByType<CannabisState>(FindObjectsInactive.Include);
+            var sc = Object.FindFirstObjectByType<ThcScenario>(FindObjectsInactive.Include);
+            if (sc != null)
+            {
+                Undo.RecordObject(sc, "Hallucinations");
+                sc.hallucinations = existing;
+                EditorUtility.SetDirty(sc);
+            }
+            EditorSceneManager.MarkSceneDirty(existing.gameObject.scene);
+            Selection.activeGameObject = existing.gameObject;
+        }
+
+        // Effet ALERTE : picto, flash rouge léger, secousse légère
+        const string AlertName = "Alerte THC";
+        const string PlayerLightName = "Lumiere joueur";
+
+        static ThcAlert CreateAlert(BrainEnvironment env, ThcScenario sc)
+        {
+            var old = FindRoot(AlertName);
+            AudioClip keptSound = old && old.GetComponent<ThcAlert>() ? old.GetComponent<ThcAlert>().alertSound : null;
+            if (old) Undo.DestroyObjectImmediate(old);
+
+            var flash = GetOrCreate("Flash_alerte", Shader.Find("Universal Render Pipeline/Particles/Unlit"));
+            flash.SetFloat("_Surface", 1f);
+            flash.SetFloat("_Blend", 0f); // Alpha
+            flash.SetFloat("_SrcBlend", (float)BlendMode.SrcAlpha);
+            flash.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
+            flash.SetFloat("_SrcBlendAlpha", (float)BlendMode.One);
+            flash.SetFloat("_DstBlendAlpha", (float)BlendMode.OneMinusSrcAlpha);
+            flash.SetFloat("_ZWrite", 0f);
+            if (flash.HasProperty("_Cull")) flash.SetFloat("_Cull", 0f);
+            flash.SetOverrideTag("RenderType", "Transparent");
+            flash.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            flash.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            flash.DisableKeyword("_ALPHAMODULATE_ON");
+            flash.SetTexture("_BaseMap", null);
+            flash.renderQueue = 4000;
+            flash.SetColor("_BaseColor", new Color(1f, 0.05f, 0.05f, 0f));
+            EditorUtility.SetDirty(flash);
+            AssetDatabase.SaveAssets();
+
+            var go = new GameObject(AlertName, typeof(RectTransform));
+            Undo.RegisterCreatedObjectUndo(go, "Alerte THC");
+            var rt = (RectTransform)go.transform;
+            rt.sizeDelta = new Vector2(400f, 420f);
+            rt.localScale = Vector3.one * 0.0006f; // 24 cm
+            rt.position = new Vector3(0f, 1.7f, 1.1f);
+            var canvas = go.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            canvas.sortingOrder = 10;
+            go.AddComponent<CanvasScaler>().dynamicPixelsPerUnit = 3f;
+            var group = go.AddComponent<CanvasGroup>();
+            group.alpha = 0f;
+            group.interactable = false;
+            group.blocksRaycasts = false;
+
+            var tri = AddUI<Image>("Triangle", go.transform, new Vector2(0f, 45f), new Vector2(320f, 290f));
+            tri.sprite = AlertSprite();
+            tri.raycastTarget = false;
+            var mark = AddText("Point d'exclamation", tri.transform, new Vector2(0f, -30f), new Vector2(200f, 220f), "!", 170);
+            mark.fontStyle = FontStyles.Bold;
+            var label = AddText("Texte", go.transform, new Vector2(0f, -175f), new Vector2(1100f, 170f), "ALERTE", 60);
+            label.enableAutoSizing = true;
+            label.fontSizeMin = 26f;
+            label.fontSizeMax = 60f;
+            label.fontStyle = FontStyles.Bold;
+            label.color = new Color(1f, 0.35f, 0.3f);
+
+            var head = go.AddComponent<HeadUpPanel>();
+            head.distance = 1.1f;
+            head.angleAboveCenter = 4f;
+            head.angleLeftOfCenter = 0f;
+            head.followSpeed = 8f;
+
+            var alert = go.AddComponent<ThcAlert>();
+            alert.scenario = sc;
+            alert.env = env;
+            alert.picto = group;
+            alert.flashMaterial = flash;
+            alert.label = label;
+            alert.alertSound = keptSound;
+            EditorSceneManager.MarkSceneDirty(go.scene);
+            return alert;
+        }
+
+        /// <summary>Triangle d'alerte rouge, généré une fois dans Assets/Brain/Sprites/Alerte.png.</summary>
+        static Sprite AlertSprite()
+        {
+            const string path = "Assets/Brain/Sprites/Alerte.png";
+            if (!System.IO.File.Exists(path))
+            {
+                const int N = 256;
+                var tex = new Texture2D(N, N, TextureFormat.RGBA32, false);
+                var a = new Vector2(0f, 0.86f);
+                var b = new Vector2(-0.96f, -0.8f);
+                var c = new Vector2(0.96f, -0.8f);
+                var fill = new Color(0.95f, 0.18f, 0.15f);
+                var border = new Color(1f, 0.85f, 0.8f);
+                for (int y = 0; y < N; y++)
+                    for (int x = 0; x < N; x++)
+                    {
+                        var p = new Vector2((x + 0.5f) / N * 2f - 1f, (y + 0.5f) / N * 2f - 1f);
+                        float d = Mathf.Min(EdgeDist(p, a, b), Mathf.Min(EdgeDist(p, b, c), EdgeDist(p, c, a)));
+                        float alpha = Mathf.Clamp01(d / 0.015f);
+                        var col = d < 0.05f ? border : fill;
+                        col.a = alpha;
+                        tex.SetPixel(x, y, col);
+                    }
+                tex.Apply();
+                System.IO.File.WriteAllBytes(path, tex.EncodeToPNG());
+                Object.DestroyImmediate(tex);
+                AssetDatabase.ImportAsset(path);
+            }
+            return LoadSprite(path);
+        }
+
+        // Distance signée à une arête (positive à l'intérieur pour un triangle a,b,c dans le sens anti-horaire)
+        static float EdgeDist(Vector2 p, Vector2 a, Vector2 b)
+        {
+            Vector2 e = b - a;
+            Vector2 n = new Vector2(-e.y, e.x).normalized;
+            return Vector2.Dot(p - a, n);
+        }
+
+        // Ambiance cinématique : étalonnage + bloom (Volume), respiration du cerveau, ouverture au noir
+        const string CinematicVolumeName = "Ambiance cinematique";
+        const string BreathingName = "Respiration du cerveau";
+        const string FaderName = "Fondu ecran";
+
+        static void CreateCinematic()
+        {
+            var env = Object.FindFirstObjectByType<BrainEnvironment>();
+            if (env == null)
+            {
+                EditorUtility.DisplayDialog("Cerveau VR", "Génère d'abord le cerveau.", "OK");
+                return;
+            }
+
+            // --- 1. Profil de post-process ---
+            EnsureFolder(RootDir, "Settings");
+            string path = RootDir + "/Settings/Ambiance_cinematique.asset";
+            var profile = AssetDatabase.LoadAssetAtPath<VolumeProfile>(path);
+            if (profile == null)
+            {
+                profile = ScriptableObject.CreateInstance<VolumeProfile>();
+                AssetDatabase.CreateAsset(profile, path);
+            }
+
+            var bloom = GetOrAdd<Bloom>(profile);
+            bloom.threshold.Override(0.85f);
+            bloom.intensity.Override(0.6f);
+            bloom.scatter.Override(0.6f);
+
+            // Neutralise le volume du template (ACES + exposition + saturation) qui assombrit tout sans HDR
+            var tone = GetOrAdd<Tonemapping>(profile);
+            tone.mode.Override(TonemappingMode.None);
+
+            var ca = GetOrAdd<ColorAdjustments>(profile);
+            ca.postExposure.Override(0f);
+            ca.contrast.Override(12f);
+            ca.saturation.Override(8f);
+
+            var split = GetOrAdd<SplitToning>(profile);
+            split.shadows.Override(new Color(0.46f, 0.48f, 0.56f));   // ombres un peu froides
+            split.highlights.Override(new Color(0.56f, 0.5f, 0.47f));  // lumières un peu chaudes
+            split.balance.Override(0f);
+
+            var vig = GetOrAdd<Vignette>(profile);
+            vig.intensity.Override(0.15f);
+            vig.smoothness.Override(0.45f);
+            vig.color.Override(Color.black);
+
+            EditorUtility.SetDirty(profile);
+            AssetDatabase.SaveAssets();
+
+            var volGo = FindRoot(CinematicVolumeName);
+            if (volGo == null)
+            {
+                volGo = new GameObject(CinematicVolumeName);
+                Undo.RegisterCreatedObjectUndo(volGo, "Ambiance cinématique");
+            }
+            var vol = volGo.GetComponent<Volume>();
+            if (vol == null) vol = volGo.AddComponent<Volume>();
+            vol.isGlobal = true;
+            vol.priority = 10f;
+            vol.sharedProfile = profile;
+
+            // Post-process activé sur la caméra du XR Origin (désactivé dans le template)
+            foreach (var cam in Object.FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (!cam.CompareTag("MainCamera")) continue;
+                var data = cam.GetComponent<UniversalAdditionalCameraData>();
+                if (data == null) continue;
+                Undo.RecordObject(data, "Post-process caméra");
+                data.renderPostProcessing = true;
+                EditorUtility.SetDirty(data);
+                PrefabUtility.RecordPrefabInstancePropertyModifications(data);
+            }
+
+            // --- 2. Respiration du cerveau ---
+            var breathing = Object.FindFirstObjectByType<BrainBreathing>(FindObjectsInactive.Include);
+            if (breathing == null)
+            {
+                var bgo = new GameObject(BreathingName);
+                Undo.RegisterCreatedObjectUndo(bgo, "Respiration");
+                breathing = bgo.AddComponent<BrainBreathing>();
+            }
+            breathing.env = env;
+            breathing.state = Object.FindFirstObjectByType<CannabisState>(FindObjectsInactive.Include);
+            breathing.wall = env.transform.Find("Paroi cerebrale");
+
+            // --- 3. Ouverture au noir ---
+            var fader = Object.FindFirstObjectByType<ScreenFader>(FindObjectsInactive.Include);
+            if (fader == null)
+            {
+                var fgo = new GameObject(FaderName);
+                Undo.RegisterCreatedObjectUndo(fgo, "Fondu");
+                fader = fgo.AddComponent<ScreenFader>();
+            }
+            fader.fadeMaterial = AssetDatabase.LoadAssetAtPath<Material>(MatDir + "/Flash_alerte.mat");
+
+            var sc = Object.FindFirstObjectByType<ThcScenario>(FindObjectsInactive.Include);
+            if (sc != null)
+            {
+                Undo.RecordObject(sc, "Ambiance");
+                sc.breathing = breathing;
+                sc.fader = fader;
+                EditorUtility.SetDirty(sc);
+            }
+
+            EditorSceneManager.MarkSceneDirty(volGo.scene);
+            Selection.activeGameObject = volGo;
+            if (fader.fadeMaterial == null)
+                Debug.LogWarning("[Cerveau VR] Matériau Flash_alerte introuvable : recrée d'abord le scénario THC (alerte) pour avoir le fondu.");
+        }
+
+        static T GetOrAdd<T>(VolumeProfile profile) where T : VolumeComponent
+        {
+            if (profile.TryGet<T>(out var c)) { c.active = true; return c; }
+            c = profile.Add<T>(true);
+            c.name = typeof(T).Name;
+            AssetDatabase.AddObjectToAsset(c, profile);
+            return c;
+        }
+
+        static void AddSmoothTurn()
+        {
+            var existing = Object.FindFirstObjectByType<SmoothTurnSettings>(FindObjectsInactive.Include);
+            if (existing == null)
+            {
+                var go = new GameObject("Rotation fluide");
+                Undo.RegisterCreatedObjectUndo(go, "Rotation fluide");
+                existing = go.AddComponent<SmoothTurnSettings>();
+            }
+            EditorSceneManager.MarkSceneDirty(existing.gameObject.scene);
+            Selection.activeGameObject = existing.gameObject;
+        }
+
+        // Poignées pour déplacer les panneaux en VR
+        const string HandleName = "Poignee";
+
+        static void AddGrabHandlesToAllPanels()
+        {
+            int n = 0;
+            foreach (var t in Object.FindObjectsByType<RectTransform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (t.parent != null) continue;
+                if (!(t.name.StartsWith("Panneau - ") || t.name.StartsWith("HUD - "))) continue;
+                var c = t.GetComponent<Canvas>();
+                if (c == null || c.renderMode != RenderMode.WorldSpace) continue;
+                AddGrabHandle(t.gameObject);
+                EditorSceneManager.MarkSceneDirty(t.gameObject.scene);
+                n++;
+            }
+            Debug.Log($"[Cerveau VR] Poignées ajoutées sur {n} panneau(x). Pense à sauvegarder la scène (Ctrl+S).");
+        }
+
+        static void AddGrabHandle(GameObject panel)
+        {
+            var rt = panel.transform as RectTransform;
+            if (rt == null) return;
+            var old = panel.transform.Find(HandleName);
+            if (old) Undo.DestroyObjectImmediate(old.gameObject);
+
+            float w = rt.sizeDelta.x, h = rt.sizeDelta.y;
+            float hw = Mathf.Clamp(w * 0.4f, 160f, 320f);
+            float hh = Mathf.Clamp(h * 0.06f, 18f, 34f);
+            var img = AddUI<Image>(HandleName, panel.transform, new Vector2(0f, -h / 2f - hh / 2f - 22f), new Vector2(hw, hh));
+            Undo.RegisterCreatedObjectUndo(img.gameObject, "Poignée");
+            img.sprite = LoadSprite("Assets/VRTemplateAssets/Sprites/UI/Round Radius 10.png");
+            img.type = Image.Type.Sliced;
+            img.pixelsPerUnitMultiplier = 3f;
+            img.raycastTarget = false;
+
+            var col = img.gameObject.AddComponent<BoxCollider>();
+            col.size = new Vector3(hw + 60f, hh + 70f, 120f);
+            img.gameObject.AddComponent<UnityEngine.XR.Interaction.Toolkit.Interactables.XRSimpleInteractable>();
+            var grab = img.gameObject.AddComponent<PanelGrabHandle>();
+            grab.panel = panel.transform;
+            grab.visual = img;
+            img.color = grab.normalColor;
+        }
+
+        // Panneau "Réinitialiser le cerveau" (manette droite)
+        const string ResetPanelName = "Panneau - Reinitialiser";
+        const string ResetCalloutName = "Callout - Reinitialiser";
+
+        static void CreateResetPanel()
+        {
+            Vector3 pos;
+            Quaternion rot;
+            GameObject old = null;
+            foreach (var t in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                if (t.name == ResetPanelName && t.parent == null) { old = t.gameObject; break; }
+            if (old)
+            {
+                pos = old.transform.position;
+                rot = old.transform.rotation;
+                Undo.DestroyObjectImmediate(old);
+            }
+            else
+            {
+                pos = new Vector3(1.2f, 1.35f, 0.9f);
+                rot = Quaternion.LookRotation(pos - new Vector3(0f, 1.35f, 0f));
+            }
+
+            var go = new GameObject(ResetPanelName, typeof(RectTransform));
+            Undo.RegisterCreatedObjectUndo(go, "Panneau réinitialiser");
+            var rt = (RectTransform)go.transform;
+            rt.SetPositionAndRotation(pos, rot);
+            rt.sizeDelta = new Vector2(600f, 600f);
+            rt.localScale = Vector3.one * 0.001f;
+
+            var canvas = go.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            go.AddComponent<CanvasScaler>().dynamicPixelsPerUnit = 3f;
+            go.AddComponent<TrackedDeviceGraphicRaycaster>();
+
+            var accent = new Color(1f, 0.45f, 0.45f);
+
+            var bg = AddUI<Image>("Fond", go.transform, Vector2.zero, new Vector2(600f, 600f));
+            bg.color = new Color(0f, 0f, 0f, 0.38f);
+            AddFrame(go.transform, "Halo", 600f, 30f, new Color(accent.r, accent.g, accent.b, 0.28f));
+            AddFrame(go.transform, "Halo fin", 600f, 20f, new Color(accent.r, accent.g, accent.b, 0.45f));
+            AddFrame(go.transform, "Bordure", 600f, 11f, accent);
+
+            var title = AddText("Titre", go.transform, new Vector2(0f, 180f), new Vector2(560f, 150f), "Réinitialiser\nle cerveau", 60);
+            title.fontStyle = FontStyles.Bold;
+            title.lineSpacing = -8f;
+
+            var body = AddText("Consignes", go.transform, new Vector2(0f, -20f), new Vector2(570f, 170f),
+                "Le cerveau revient à\nson état normal de départ", 40);
+            body.lineSpacing = -6f;
+
+            var btnImg = AddUI<Image>("Bouton reinitialiser", go.transform, new Vector2(0f, -191f), new Vector2(420f, 108f));
+            btnImg.sprite = LoadSprite("Assets/VRTemplateAssets/Sprites/UI/Round Radius 10.png");
+            btnImg.type = Image.Type.Sliced;
+            btnImg.pixelsPerUnitMultiplier = 6f;
+            btnImg.color = Color.white;
+            var btn = btnImg.gameObject.AddComponent<Button>();
+            btn.targetGraphic = btnImg;
+            var colors = btn.colors;
+            colors.normalColor = accent;
+            colors.highlightedColor = new Color(1f, 0.65f, 0.65f);
+            colors.pressedColor = new Color(0.75f, 0.25f, 0.25f);
+            colors.selectedColor = accent;
+            btn.colors = colors;
+            var label = AddText("Texte", btnImg.transform, Vector2.zero, new Vector2(420f, 108f), "Réinitialiser", 48);
+            label.fontStyle = FontStyles.Bold;
+
+            var reset = go.AddComponent<BrainResetPanel>();
+            reset.resetButton = btn;
+            reset.buttonLabel = label;
+
+            if (panelMode == PanelMode.InfobulleMainGauche)
+            {
+                if (!SetupAsCallout(go, "Affordance Callouts Right", ResetCalloutName, 0.00035f, 0.15f, -0.02f))
+                    EditorUtility.DisplayDialog("Cerveau VR", "« Affordance Callouts Right » introuvable dans la scène : le panneau reste fixe.", "OK");
+            }
+            else if (panelMode == PanelMode.Poignet)
+            {
+                var wm = go.AddComponent<WristMenu>();
+                wm.hand = UnityEngine.XR.Hands.Handedness.Right;
+                foreach (var t in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    if (t.name == "Right Controller" && t.gameObject.scene == go.scene) { wm.controllerFallback = t; break; }
+            }
+
+            AddGrabHandle(go);
+            EditorSceneManager.MarkSceneDirty(go.scene);
+            Selection.activeGameObject = go;
+        }
+
         // Panneau "Créer un neurone"
         static void CreateSpawnerPanel()
         {
@@ -391,6 +1033,7 @@ namespace BrainVR.EditorTools
                 spawner.spawnOffset = new Vector3(0f, 0.16f, -0.06f);
             }
 
+            AddGrabHandle(go);
             EditorSceneManager.MarkSceneDirty(go.scene);
             Selection.activeGameObject = go;
         }
@@ -435,10 +1078,13 @@ namespace BrainVR.EditorTools
         }
 
         static bool SetupAsLeftCallout(GameObject panel, string calloutName, float scale, float height, float side)
+            => SetupAsCallout(panel, "Affordance Callouts Left", calloutName, scale, height, side);
+
+        static bool SetupAsCallout(GameObject panel, string calloutsName, string calloutName, float scale, float height, float side)
         {
             Transform callouts = null;
             foreach (var t in Object.FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
-                if (t.name == "Affordance Callouts Left" && t.gameObject.scene == panel.scene) { callouts = t; break; }
+                if (t.name == calloutsName && t.gameObject.scene == panel.scene) { callouts = t; break; }
             if (callouts == null) return false;
             var gaze = callouts.GetComponent<CalloutGazeController>();
             if (gaze == null) return false;
@@ -590,6 +1236,7 @@ namespace BrainVR.EditorTools
             go.AddComponent<HeadUpPanel>();
             RemoveLeftCallout(TextCalloutName);
 
+            AddGrabHandle(go);
             EditorSceneManager.MarkSceneDirty(go.scene);
             Selection.activeGameObject = seqGo;
         }
@@ -709,6 +1356,14 @@ namespace BrainVR.EditorTools
                 {
                     Undo.RecordObject(r, "Décor du template");
                     r.enabled = visible;
+                }
+                // Les collisions des murs / meubles du template restaient actives = murs invisibles.
+                // On garde seulement les collisions plates (sol), utiles pour la téléportation.
+                foreach (var c in go.GetComponentsInChildren<Collider>(true))
+                {
+                    if (c.bounds.size.y < 0.3f) continue;
+                    Undo.RecordObject(c, "Décor du template");
+                    c.enabled = visible;
                 }
             }
             EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());

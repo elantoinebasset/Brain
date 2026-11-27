@@ -14,6 +14,8 @@ namespace BrainVR
         public float height = 0.15f;
         [Tooltip("Décalage vers la gauche, vu du joueur (m)")]
         public float side = 0.02f;
+        [Tooltip("Décalage vers l'avant, vu du joueur (m)")]
+        public float forward = 0f;
         public float followSmoothing = 14f;
 
         void OnEnable()
@@ -36,6 +38,19 @@ namespace BrainVR
                 Quaternion.Slerp(transform.rotation, rot, k));
         }
 
+        /// <summary>Recalcule le décalage par rapport à la manette pour garder cette position.</summary>
+        public void SetFromWorldPosition(Vector3 worldPos)
+        {
+            var cam = Camera.main;
+            if (cam == null || target == null) return;
+            Vector3 d = worldPos - target.position;
+            Vector3 right = Vector3.ProjectOnPlane(cam.transform.right, Vector3.up).normalized;
+            Vector3 fwd = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up).normalized;
+            height = d.y;
+            side = -Vector3.Dot(d, right);
+            forward = Vector3.Dot(d, fwd);
+        }
+
         bool TryGetTargetPose(out Vector3 pos, out Quaternion rot)
         {
             pos = default;
@@ -43,7 +58,8 @@ namespace BrainVR
             var cam = Camera.main;
             if (target == null || cam == null) return false;
             Vector3 camRight = cam.transform.right;
-            pos = target.position + Vector3.up * height - camRight * side;
+            Vector3 camFwd = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up).normalized;
+            pos = target.position + Vector3.up * height - camRight * side + camFwd * forward;
             Vector3 look = pos - cam.transform.position;
             look.y *= 0.5f;
             rot = Quaternion.LookRotation(look.normalized, Vector3.up); // le canvas se lit depuis son côté -Z

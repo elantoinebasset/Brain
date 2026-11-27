@@ -85,6 +85,17 @@ namespace BrainVR
             if (textField) textField.text = "";
         }
 
+        /// <summary>Remplace les textes et lance la nouvelle séquence (ex. séquence THC).</summary>
+        public void Play(List<TextGroup> newGroups, float delay = 0.3f)
+        {
+            groups = newGroups;
+            groupIndex = -1;
+            state = State.Waiting;
+            timer = delay;
+            panelHidden = false;
+            if (textField) textField.text = "";
+        }
+
         [ContextMenu("Texte suivant (bouton A)")]
         public void Skip()
         {

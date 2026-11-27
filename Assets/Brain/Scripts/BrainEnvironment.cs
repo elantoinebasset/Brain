@@ -62,6 +62,23 @@ namespace BrainVR
         [ColorUsage(false, true)] public Color neuronFlashEmission = new Color(1.6f, 0.6f, 2.6f);
         public float flashDecay = 2f;
 
+        [Header("THC : neurones bloqués (éteints + halo violet)")]
+        [ColorUsage(false, true)] public Color blockedEmission = new Color(0.01f, 0.01f, 0.015f);
+        public Color blockedBaseColor = new Color(0.22f, 0.22f, 0.27f);
+        public Material blockedHaloMaterial;
+        public Color blockedHaloColor = new Color(0.8f, 0.25f, 1f, 0.9f);
+        public float blockedHaloSize = 1.3f;
+
+        [Header("THC : activité perturbée (0 = normale, 1 = chaos)")]
+        [Range(0f, 1f)] public float perturbation;
+        [ColorUsage(false, true)] public Color flickerEmission = new Color(1.2f, 1.6f, 2.4f);
+        [Tooltip("Accélération des neurotransmetteurs (particules) à perturbation max (0.6 = +60 %)")]
+        public float transmitterSpeedBoost = 0.6f;
+        [Tooltip("Agitation ajoutée aux particules à perturbation max")]
+        public float transmitterNoiseBoost = 0.4f;
+        [Tooltip("Part des particules retirées à perturbation max (0.6 = 60 % en moins)")]
+        [Range(0f, 1f)] public float transmitterReduction = 0.6f;
+
         [Header("Neurones créés en jeu")]
         public Transform neuronsContainer;
         public Material neuronMaterial;
@@ -82,6 +99,8 @@ namespace BrainVR
             public int conn;
             public bool reverse;
             public float dist;
+            public float cutAt;   // signal coupé en route (THC)
+            public float seed;
         }
 
         readonly List<Pulse> pool = new List<Pulse>();
@@ -90,6 +109,18 @@ namespace BrainVR
         readonly List<float> lengths = new List<float>();
         readonly List<float> flash = new List<float>();
         readonly List<float> lastFire = new List<float>();
+        readonly HashSet<int> blocked = new HashSet<int>();
+        readonly HashSet<int> blockedConns = new HashSet<int>();
+        readonly List<KeyValuePair<int, float>> flickers = new List<KeyValuePair<int, float>>();
+        float flickerTimer;
+        ParticleSystem transmitters;
+        float baseSimSpeed = 1f, baseNoise, baseRate;
+        bool baseNoiseEnabled;
+        float shownPerturbation = -1f;
+        class Halo { public Transform t; public Renderer r; public float phase; }
+        readonly List<Halo> halos = new List<Halo>();
+        MaterialPropertyBlock haloMpb;
+        static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         float spontTimer;
         MaterialPropertyBlock mpb;
         static readonly int EmissionId = Shader.PropertyToID("_EmissionColor");
@@ -176,10 +207,148 @@ namespace BrainVR
             return new Pulse { go = go, trail = tr };
         }
 
+        /// <summary>Neurone dont les récepteurs sont occupés par le THC : il ne s'active plus.</summary>
+        public bool IsBlocked(int i) => blocked.Contains(i);
+        public int BlockedCount => blocked.Count;
+
+        public void SetBlocked(int i)
+        {
+            if (i < 0 || i >= neurons.Count || neurons[i].removed) return;
+            if (!blocked.Add(i)) return;
+            if (i < flash.Count) flash[i] = 0f;
+            ApplyBlockedLook(neurons[i].renderer);
+            foreach (int c in neurons[i].connections)
+                if (c >= 0 && c < connections.Count && !connections[c].removed)
+                {
+                    blockedConns.Add(c);
+                    ApplyBlockedLook(connections[c].renderer);
+                }
+            if (blockedHaloMaterial != null && neurons[i].renderer != null) CreateHalo(neurons[i].renderer.transform);
+        }
+
+        public bool IsAlive(int i) => i >= 0 && i < neurons.Count && !neurons[i].removed && neurons[i].renderer != null;
+        public Vector3 NeuronWorldPosition(int i) => neurons[i].renderer.transform.position;
+
+        void ApplyBlockedLook(Renderer r)
+        {
+            if (r == null) return;
+            if (mpb == null) mpb = new MaterialPropertyBlock();
+            r.GetPropertyBlock(mpb);
+            mpb.SetColor(BaseColorId, blockedBaseColor);
+            mpb.SetColor(EmissionId, blockedEmission);
+            r.SetPropertyBlock(mpb);
+        }
+
+        void CreateHalo(Transform parent)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            go.name = "Halo THC";
+            var col = go.GetComponent<Collider>();
+            if (col) Destroy(col);
+            go.transform.SetParent(parent, false);
+            var r = go.GetComponent<Renderer>();
+            r.sharedMaterial = blockedHaloMaterial;
+            r.shadowCastingMode = ShadowCastingMode.Off;
+            r.receiveShadows = false;
+            r.lightProbeUsage = LightProbeUsage.Off;
+            r.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            halos.Add(new Halo { t = go.transform, r = r, phase = Random.value * 6f });
+        }
+
+        void UpdatePerturbation(float dt)
+        {
+            // Connexions qui clignotent
+            for (int k = flickers.Count - 1; k >= 0; k--)
+            {
+                if (Time.time < flickers[k].Value) continue;
+                RestoreConnection(flickers[k].Key);
+                flickers.RemoveAt(k);
+            }
+            flickerTimer -= dt;
+            if (flickerTimer <= 0f && connections.Count > 0)
+            {
+                flickerTimer = 0.08f;
+                if (Random.value < perturbation)
+                {
+                    int n = 1 + Mathf.FloorToInt(perturbation * 3f);
+                    for (int k = 0; k < n; k++)
+                    {
+                        int c = Random.Range(0, connections.Count);
+                        var r = connections[c].removed ? null : connections[c].renderer;
+                        if (r == null) continue;
+                        if (mpb == null) mpb = new MaterialPropertyBlock();
+                        r.GetPropertyBlock(mpb);
+                        mpb.SetColor(EmissionId, flickerEmission * Random.Range(0.5f, 1.2f));
+                        r.SetPropertyBlock(mpb);
+                        flickers.Add(new KeyValuePair<int, float>(c, Time.time + Random.Range(0.05f, 0.18f)));
+                    }
+                }
+            }
+
+            // Neurotransmetteurs (particules) de plus en plus agités
+            if (transmitters == null && shownPerturbation < 0f)
+            {
+                foreach (var ps in GetComponentsInChildren<ParticleSystem>(true))
+                    if (ps.name.StartsWith("Neurotransmetteurs")) { transmitters = ps; break; }
+                if (transmitters != null)
+                {
+                    baseSimSpeed = transmitters.main.simulationSpeed;
+                    var nz = transmitters.noise;
+                    baseNoiseEnabled = nz.enabled;
+                    baseNoise = nz.enabled ? nz.strength.constant : 0f;
+                    baseRate = transmitters.emission.rateOverTime.constant;
+                }
+                shownPerturbation = 0f;
+            }
+            if (transmitters != null && Mathf.Abs(perturbation - shownPerturbation) > 0.01f)
+            {
+                shownPerturbation = perturbation;
+                var main = transmitters.main;
+                main.simulationSpeed = baseSimSpeed * (1f + perturbation * transmitterSpeedBoost);
+                var nz = transmitters.noise;
+                nz.enabled = baseNoiseEnabled || perturbation > 0.01f;
+                nz.strength = baseNoise + perturbation * transmitterNoiseBoost;
+                nz.frequency = 0.5f + perturbation * 0.6f;
+                var em = transmitters.emission;
+                em.rateOverTime = baseRate * (1f - perturbation * transmitterReduction);
+            }
+        }
+
+        void RestoreConnection(int c)
+        {
+            if (c < 0 || c >= connections.Count || connections[c].removed) return;
+            var r = connections[c].renderer;
+            if (r == null) return;
+            if (blockedConns.Contains(c)) ApplyBlockedLook(r);
+            else r.SetPropertyBlock(null);
+        }
+
+        void UpdateHalos()
+        {
+            if (halos.Count == 0) return;
+            var cam = Camera.main;
+            if (haloMpb == null) haloMpb = new MaterialPropertyBlock();
+            float time = Time.time;
+            for (int k = halos.Count - 1; k >= 0; k--)
+            {
+                var h = halos[k];
+                if (h.t == null) { halos.RemoveAt(k); continue; }
+                if (cam) h.t.rotation = Quaternion.LookRotation(h.t.position - cam.transform.position);
+                float pulse = Mathf.Sin(time * 2.2f + h.phase);
+                float parentScale = h.t.parent ? Mathf.Max(1e-4f, h.t.parent.lossyScale.x) : 1f;
+                h.t.localScale = Vector3.one * blockedHaloSize * (0.92f + 0.12f * pulse) / parentScale;
+                var c = blockedHaloColor;
+                c.a *= 0.65f + 0.35f * pulse;
+                h.r.GetPropertyBlock(haloMpb);
+                haloMpb.SetColor(BaseColorId, c);
+                h.r.SetPropertyBlock(haloMpb);
+            }
+        }
+
         /// <summary>Fait s'activer un neurone : il flashe et envoie des impulsions à ses voisins.</summary>
         public void Fire(int i)
         {
-            if (neurons[i].removed) return;
+            if (neurons[i].removed || blocked.Contains(i)) return;
             if (Time.time - lastFire[i] < refractoryTime) return;
             lastFire[i] = Time.time;
             flash[i] = 1f;
@@ -200,6 +369,8 @@ namespace BrainVR
             p.conn = c;
             p.reverse = connections[c].a != from;
             p.dist = 0f;
+            p.seed = Random.value * 100f;
+            p.cutAt = Random.value < perturbation * 0.45f ? lengths[c] * Random.Range(0.2f, 0.85f) : float.MaxValue;
             p.go.transform.localPosition = Sample(c, p.reverse ? lengths[c] : 0f);
             p.go.SetActive(true);
             p.trail.Clear();
@@ -216,14 +387,27 @@ namespace BrainVR
             if (spontTimer <= 0f && neurons.Count > 0)
             {
                 Fire(Random.Range(0, neurons.Count));
-                spontTimer = spontaneousInterval * Random.Range(0.5f, 1.5f);
+                // Activité désordonnée : rafales d'activations
+                if (Random.value < perturbation * 0.35f)
+                    for (int b = 0; b < 3; b++) Fire(Random.Range(0, neurons.Count));
+                spontTimer = spontaneousInterval * Random.Range(0.5f, 1.5f) * (1f - 0.5f * perturbation);
             }
 
             for (int k = active.Count - 1; k >= 0; k--)
             {
                 var p = active[k];
                 int c = p.conn;
-                p.dist += pulseSpeed * dt;
+                float speed = pulseSpeed * Mathf.Max(0.2f, 1f + perturbation * (Mathf.PerlinNoise(p.seed, Time.time * 3f) * 2.2f - 0.8f));
+                p.dist += speed * dt;
+                if (p.dist >= p.cutAt)
+                {
+                    // Signal coupé en route
+                    p.trail.emitting = false;
+                    p.go.SetActive(false);
+                    active.RemoveAt(k);
+                    pool.Add(p);
+                    continue;
+                }
                 if (connections[c].removed)
                 {
                     p.trail.emitting = false;
@@ -240,8 +424,11 @@ namespace BrainVR
                     pool.Add(p);
 
                     int target = p.reverse ? connections[c].a : connections[c].b;
-                    flash[target] = Mathf.Max(flash[target], 0.5f);
-                    if (Random.value < propagationChance) Fire(target);
+                    if (!blocked.Contains(target))
+                    {
+                        flash[target] = Mathf.Max(flash[target], 0.5f);
+                        if (Random.value < propagationChance) Fire(target);
+                    }
                 }
                 else
                 {
@@ -249,9 +436,12 @@ namespace BrainVR
                 }
             }
 
+            UpdateHalos();
+            UpdatePerturbation(dt);
+
             for (int i = 0; i < flash.Count; i++)
             {
-                if (flash[i] <= 0f) continue;
+                if (flash[i] <= 0f || blocked.Contains(i)) continue;
                 flash[i] = Mathf.Max(0f, flash[i] - dt * flashDecay);
                 float f = flash[i];
                 SetEmission(i, Color.Lerp(neuronBaseEmission, neuronFlashEmission, f * f));
@@ -411,6 +601,7 @@ namespace BrainVR
         {
             var r = neurons[i].renderer;
             if (r == null) return;
+            if (mpb == null) mpb = new MaterialPropertyBlock();
             r.GetPropertyBlock(mpb);
             mpb.SetColor(EmissionId, c);
             r.SetPropertyBlock(mpb);
